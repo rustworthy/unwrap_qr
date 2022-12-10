@@ -2,9 +2,7 @@ use actix::System;
 use queens_rock::Scanner;
 use unwrap_qr::errors::Error;
 use unwrap_qr::queue_actor::{QueueActor, QueueHandler, RabbitMessage, TaskID};
-
-pub const REQUESTS: &str = "requests";
-pub const RESPONSES: &str = "responses";
+use unwrap_qr::{REQUESTS, RESPONSES};
 
 #[derive(Clone)]
 struct WorkerHandler;
@@ -20,7 +18,7 @@ impl QueueHandler for WorkerHandler {
 
     fn handle(
         &self,
-        _: &TaskID,
+        _: TaskID,
         incoming: RabbitMessage,
     ) -> Result<Option<RabbitMessage>, unwrap_qr::errors::Error> {
         log::debug!("Incoming: {:?}", incoming);

@@ -12,6 +12,9 @@ use lapin::{
     Channel, Connection, ConnectionProperties,
 };
 
+pub const REQUESTS: &str = "requests";
+pub const RESPONSES: &str = "responses";
+
 pub fn ensure_channel(sys: &mut SystemRunner) -> Result<Channel, Error> {
     let conn = sys
         .block_on(Connection::connect(
@@ -64,6 +67,7 @@ impl Message for QrRequest {
     type Result = ();
 }
 
+#[derive(Clone)]
 pub enum QrResponse {
     Success(String),
     Failure(String),

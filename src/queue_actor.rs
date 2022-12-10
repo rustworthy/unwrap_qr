@@ -19,7 +19,7 @@ pub type RabbitMessage = Vec<u8>;
 pub trait QueueHandler: 'static + Unpin + Clone {
     fn source_queue_name(&self) -> String;
     fn target_queue_name(&self) -> String;
-    fn handle(&self, id: &TaskID, incoming: RabbitMessage) -> Result<Option<RabbitMessage>, Error>;
+    fn handle(&self, id: TaskID, incoming: RabbitMessage) -> Result<Option<RabbitMessage>, Error>;
 }
 
 pub struct QueueActor<T: QueueHandler> {
@@ -69,7 +69,7 @@ impl<T: QueueHandler> QueueActor<T> {
 
         let handling_result = self
             .handler
-            .handle(&correlation_id, item.data.clone())
+            .handle(correlation_id, item.data.clone())
             .map_err(|e| Error::Common(format!("Error processing message: {}", e)))?;
 
         Ok(handling_result.unwrap_or_default())
