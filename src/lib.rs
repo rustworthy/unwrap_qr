@@ -1,5 +1,3 @@
-#![allow(unused_imports)]
-
 pub mod errors;
 pub mod queue_actor;
 

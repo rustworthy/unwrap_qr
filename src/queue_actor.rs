@@ -4,8 +4,8 @@ use actix::{
 };
 use lapin::{
     message::Delivery,
-    options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions},
-    types::{FieldTable, ShortString},
+    options::{BasicAckOptions, BasicPublishOptions},
+    types::ShortString,
     BasicProperties, Channel, Error as LapinErr,
 };
 use uuid::Uuid;
@@ -62,20 +62,26 @@ impl<T: QueueHandler> QueueActor<T> {
         Ok(addr)
     }
 
-    pub fn process_delivery(&self, item: &Delivery) -> Result<Vec<u8>, Error> {
+    pub fn process_delivery(&self, item: &Delivery) -> Result<(String, Vec<u8>), Error> {
+        log::debug!(
+            "Starting to process delivery with properties: {:?}",
+            item.properties
+        );
         let correlation_id = item.properties.correlation_id().to_owned().ok_or_else(|| {
             Error::Common("No correlation ID found in msg: no address for response :(".to_string())
         })?;
 
         let handling_result = self
             .handler
-            .handle(correlation_id, item.data.clone())
-            .map_err(|e| Error::Common(format!("Error processing message: {}", e)))?;
+            .handle(correlation_id.clone(), item.data.clone())
+            .map_err(|e| Error::Common(format!("Error processing message: {}", e)))?
+            .unwrap_or_default();
 
-        Ok(handling_result.unwrap_or_default())
+        Ok((correlation_id.to_string(), handling_result))
     }
 
-    pub fn send_message(&self, ctx: &mut Context<Self>, msg: Vec<u8>) {
+    pub fn send_message(&self, corr_id: String, ctx: &mut Context<Self>, msg: Vec<u8>) {
+        log::debug!("Sending msg with id {}", &corr_id);
         let queue_name = String::from(self.handler.target_queue_name());
         let chan = self.channel.clone();
         ctx.spawn(wrap_future(async move {
@@ -84,7 +90,7 @@ impl<T: QueueHandler> QueueActor<T> {
                 &queue_name,
                 BasicPublishOptions::default(),
                 &msg,
-                BasicProperties::default(),
+                BasicProperties::default().with_correlation_id(corr_id.into()),
             )
             .await
             .expect("Failed to send msg");
@@ -102,7 +108,7 @@ impl<T: QueueHandler> StreamHandler<Result<Delivery, LapinErr>> for QueueActor<T
         let item = item.expect("Error unpacking the message");
 
         log::debug!(
-            "Message received from {}!",
+            "Message received from {} queue!",
             self.handler.source_queue_name()
         );
         let chan = self.channel.clone();
@@ -113,7 +119,7 @@ impl<T: QueueHandler> StreamHandler<Result<Delivery, LapinErr>> for QueueActor<T
         }));
 
         log::debug!("Processing message");
-        let handling_result = match self.process_delivery(&item) {
+        let (corr_id, res) = match self.process_delivery(&item) {
             Err(e) => {
                 log::warn!("{}", e);
                 return;
@@ -125,11 +131,11 @@ impl<T: QueueHandler> StreamHandler<Result<Delivery, LapinErr>> for QueueActor<T
             "Sending processing results to {}",
             &self.handler.target_queue_name()
         );
-        self.send_message(ctx, handling_result);
+        self.send_message(corr_id, ctx, res);
     }
 }
 
-pub struct SendMsg(Vec<u8>);
+pub struct SendMsg(pub Vec<u8>);
 
 impl Message for SendMsg {
     type Result = String;
@@ -139,7 +145,7 @@ impl<T: QueueHandler> Handler<SendMsg> for QueueActor<T> {
     type Result = String;
     fn handle(&mut self, msg: SendMsg, ctx: &mut Self::Context) -> Self::Result {
         let corr_id = Uuid::new_v4().to_string();
-        self.send_message(ctx, msg.0);
+        self.send_message(corr_id.clone(), ctx, msg.0);
         corr_id
     }
 }

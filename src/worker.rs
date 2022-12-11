@@ -59,9 +59,9 @@ fn main() {
     let mut sys_runner = System::new("unwrap_qr_worker");
     let handler = WorkerHandler::new();
     if let Err(e) = QueueActor::new(handler, &mut sys_runner) {
-        panic!("Failed to initiate a queue actor: {}", e)
+        panic!("Failed to initiate a queue actor for WORKER: {}", e)
     }
     if let Err(e) = sys_runner.run() {
-        panic!("Failed to launch system runner: {}", e)
+        panic!("Failed to launch system runner for WORKER: {}", e)
     }
 }
