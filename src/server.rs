@@ -1,33 +1,36 @@
-use core::fmt;
-use std::sync::{Arc, Mutex};
-
-use actix::{Addr, System};
+use actix::{Addr, Handler as ActixHandler, Message, System};
 use actix_multipart::Multipart;
 use actix_web::{
-    body::MessageBody, middleware, web, web::Data, App, Error as ActixError, HttpResponse,
-    HttpServer, Responder,
+    http::header, middleware, web, web::Data, App, Error as ActixError, HttpResponse, HttpServer,
+    Responder,
 };
 use askama::Template;
 use chrono::{DateTime, Utc};
+use core::fmt;
 use futures_util::stream::StreamExt as _;
 use indexmap::IndexMap;
+use std::{
+    io::Write,
+    sync::{Arc, Mutex},
+};
 use unwrap_qr::{
     errors::Error,
-    queue_actor::{QueueActor, QueueHandler, RabbitMessage, SendMsg, TaskID},
+    queue_actor::{QueueActor, QueueHandler, RabbitMessage, TaskID},
     QrResponse, REQUESTS, RESPONSES,
 };
+use uuid::Uuid;
 
 type Tasks_ = IndexMap<String, Record>;
 type SharedTasks = Arc<Mutex<Tasks_>>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Record {
     task_id: TaskID,
     timestamp: DateTime<Utc>,
     status: Status,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Status {
     Pending,
     Done(QrResponse),
@@ -66,6 +69,28 @@ impl QueueHandler for ServerHandler {
     }
 }
 
+// ------------------------------------------------------------------------------------------------
+// The msg submitted by user (e.g.: qr-code image) starts its trip in here; we exchange it for the corr_id.
+// pub struct TaskMessage(pub Vec<u8>);
+pub struct TaskMessage {
+    
+};
+
+impl Message for TaskMessage {
+    type Result = String;
+}
+
+impl ActixHandler<TaskMessage> for QueueActor<ServerHandler> {
+    type Result = String;
+    fn handle(&mut self, msg: TaskMessage, ctx: &mut Self::Context) -> Self::Result {
+        let corr_id = Uuid::new_v4().to_string();
+        log::debug!("Generated correlation_id: {}. Sending message...", corr_id);
+        self.send_message(corr_id.clone(), ctx, msg.0);
+        corr_id
+    }
+}
+// ------------------------------------------------------------------------------------------------
+
 #[derive(Template)]
 #[template(path = "tasks.html")]
 struct Tasks {
@@ -78,15 +103,7 @@ struct State {
     addr: Addr<QueueActor<ServerHandler>>,
 }
 
-async fn index_handler(app_data: Data<State>) -> impl Responder {
-    let id = app_data
-        .addr
-        .send(SendMsg(
-            "hello from index page".try_into_bytes().unwrap().to_vec(),
-        ))
-        .await;
-    log::debug!("{:#?}", id);
-    log::debug!("Send a check msg, recevied back");
+async fn index_handler() -> impl Responder {
     HttpResponse::Ok().body("QR Parsing Service")
 }
 
@@ -98,18 +115,28 @@ async fn list_tasks(tasks: Data<State>) -> impl Responder {
 }
 
 async fn handle_upload(
-    mut files: Multipart,
-    tasks: Data<State>,
+    mut items: Multipart,
+    app_data: Data<State>,
 ) -> Result<HttpResponse, ActixError> {
-    while let Some(item) = files.next().await {
-        let mut field = item?;
-
-        // Field in turn is stream of *Bytes* object
-        while let Some(chunk) = field.next().await {
-            println!("-- CHUNK: \n{:?}", std::str::from_utf8(&chunk?));
+    while let Some(Ok(mut item)) = items.next().await {
+        let mut f = Vec::new();
+        while let Some(chunk) = item.next().await {
+            let data = chunk.unwrap();
+            f.write_all(&data).unwrap()
         }
+        let id = app_data.addr.send(TaskMessage(f)).await.unwrap();
+        let record = Record {
+            task_id: id.clone().into(),
+            timestamp: Utc::now(),
+            status: Status::Pending,
+        };
+        log::debug!("Adding new recored: {:?}", record);
+        app_data.tasks.lock().unwrap().insert(id, record);
     }
-    Ok(HttpResponse::Ok().into())
+
+    Ok(HttpResponse::Found()
+        .append_header((header::LOCATION, "/tasks"))
+        .finish())
 }
 
 #[tokio::main]

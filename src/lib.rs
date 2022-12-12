@@ -65,7 +65,7 @@ impl Message for QrRequest {
     type Result = ();
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum QrResponse {
     Success(String),
     Failure(String),

@@ -1,6 +1,6 @@
 use actix::{
-    fut::wrap_future, Actor, Addr, AsyncContext, Context, Handler, Message, StreamHandler,
-    SystemRunner,
+    fut::wrap_future, Actor as ActixActor, Addr, AsyncContext, Context,
+    StreamHandler as ActixStreamHandler, SystemRunner,
 };
 use lapin::{
     message::Delivery,
@@ -8,7 +8,6 @@ use lapin::{
     types::ShortString,
     BasicProperties, Channel, Error as LapinErr,
 };
-use uuid::Uuid;
 
 use crate::errors::Error;
 use crate::{ensure_channel, ensure_consumer, ensure_queue};
@@ -98,30 +97,33 @@ impl<T: QueueHandler> QueueActor<T> {
     }
 }
 
-impl<T: QueueHandler> Actor for QueueActor<T> {
+// ---------------------------------------------------------------------------------------
+
+impl<T: QueueHandler> ActixActor for QueueActor<T> {
     type Context = Context<Self>;
     fn started(&mut self, _: &mut Self::Context) {}
 }
 
-impl<T: QueueHandler> StreamHandler<Result<Delivery, LapinErr>> for QueueActor<T> {
+impl<T: QueueHandler> ActixStreamHandler<Result<Delivery, LapinErr>> for QueueActor<T> {
     fn handle(&mut self, item: Result<Delivery, LapinErr>, ctx: &mut Self::Context) {
         let item = item.expect("Error unpacking the message");
 
         log::debug!(
-            "Message received from {} queue!",
+            "Stream handler received a message from {} queue!",
             self.handler.source_queue_name()
         );
+
         let chan = self.channel.clone();
         ctx.spawn(wrap_future(async move {
             chan.basic_ack(item.delivery_tag, BasicAckOptions::default())
                 .await
-                .expect("Failed to ack")
+                .expect("Stream handler failed to acknowledge message receipt")
         }));
 
-        log::debug!("Processing message");
+        log::debug!("Stream handler started processing message...");
         let (corr_id, res) = match self.process_delivery(&item) {
             Err(e) => {
-                log::warn!("{}", e);
+                log::warn!("Error occurred when proccessing delivery: {}", e);
                 return;
             }
             Ok(res) => res,
@@ -132,20 +134,5 @@ impl<T: QueueHandler> StreamHandler<Result<Delivery, LapinErr>> for QueueActor<T
             &self.handler.target_queue_name()
         );
         self.send_message(corr_id, ctx, res);
-    }
-}
-
-pub struct SendMsg(pub Vec<u8>);
-
-impl Message for SendMsg {
-    type Result = String;
-}
-
-impl<T: QueueHandler> Handler<SendMsg> for QueueActor<T> {
-    type Result = String;
-    fn handle(&mut self, msg: SendMsg, ctx: &mut Self::Context) -> Self::Result {
-        let corr_id = Uuid::new_v4().to_string();
-        self.send_message(corr_id.clone(), ctx, msg.0);
-        corr_id
     }
 }

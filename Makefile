@@ -15,3 +15,6 @@ rabbit/list_consumers:
 	docker exec rabbitmq /bin/bash -c "rabbitmqctl list_consumers"
 
 rabbit/list_all: rabbit/list_channels rabbit/list_exchanges rabbit/list_queues rabbit/list_consumers
+
+serve:
+	fuser -k 8089/tcp || true && RUST_LOG=debug cargo run --bin unwrap_qr_server

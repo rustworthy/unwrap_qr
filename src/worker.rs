@@ -21,7 +21,7 @@ impl QueueHandler for WorkerHandler {
         _: TaskID,
         incoming: RabbitMessage,
     ) -> Result<Option<RabbitMessage>, unwrap_qr::errors::Error> {
-        log::debug!("Incoming: {:?}", incoming);
+        log::debug!("Worker received message. Scanning...");
         let outgoing = self.scan(&incoming)?;
         log::debug!("Outgoing: {:?}", outgoing);
         Ok(Some(outgoing.into_bytes()))
@@ -43,6 +43,7 @@ impl WorkerHandler {
         .scan()
         .extract(0)
         .ok_or_else(|| Error::Common("Code exctracted from QR bitmap is empty".to_string()))?;
+        log::debug!("Extracted code from luma");
 
         let data = code
             .decode()
