@@ -2,7 +2,7 @@ use actix::System;
 use queens_rock::Scanner;
 use unwrap_qr::errors::Error;
 use unwrap_qr::queue_actor::{QueueActor, QueueHandler, RabbitMessage, TaskID};
-use unwrap_qr::{REQUESTS, RESPONSES};
+use unwrap_qr::{ProcessingResult, REQUESTS, RESPONSES};
 
 #[derive(Clone)]
 struct WorkerHandler;
@@ -16,24 +16,23 @@ impl QueueHandler for WorkerHandler {
         RESPONSES.to_string()
     }
 
-    fn handle(
-        &self,
-        _: TaskID,
-        incoming: RabbitMessage,
-    ) -> Result<Option<RabbitMessage>, unwrap_qr::errors::Error> {
-        log::debug!("Worker received message. Scanning...");
-        let outgoing = self.scan(&incoming)?;
-        log::debug!("Outgoing: {:?}", outgoing);
-        Ok(Some(outgoing.into_bytes()))
+    fn handle(&self, _: TaskID, incoming: ProcessingResult) -> Option<ProcessingResult> {
+        if let ProcessingResult::InProgress(Some(data)) = incoming {
+            match self.scan(data) {
+                Ok(string_befind_qr) => return Some(ProcessingResult::Success(string_befind_qr)),
+                Err(e) => return Some(ProcessingResult::Failure(e.to_string())),
+            }
+        }
+        log::error!("Worker expects some raw data to process.");
+        None
     }
 }
 
 impl WorkerHandler {
-    fn new() -> Self {
-        WorkerHandler {}
-    }
-    fn scan(&self, incoming: &RabbitMessage) -> Result<String, Error> {
-        let image = image::load_from_memory(incoming).map_err(|e| Error::Common(e.to_string()))?;
+    fn scan(&self, incoming: RabbitMessage) -> Result<String, Error> {
+        let image = image::load_from_memory(incoming.as_slice())
+            .map_err(|e| Error::Common(e.to_string()))?;
+
         let luma = image.to_luma8().into_vec();
         let code = Scanner::new(
             luma.as_ref(),
@@ -58,10 +57,11 @@ fn main() {
     env_logger::init();
 
     let mut sys_runner = System::new("unwrap_qr_worker");
-    let handler = WorkerHandler::new();
-    if let Err(e) = QueueActor::new(handler, &mut sys_runner) {
+
+    if let Err(e) = QueueActor::new(WorkerHandler {}, &mut sys_runner) {
         panic!("Failed to initiate a queue actor for WORKER: {}", e)
     }
+
     if let Err(e) = sys_runner.run() {
         panic!("Failed to launch system runner for WORKER: {}", e)
     }

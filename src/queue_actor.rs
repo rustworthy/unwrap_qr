@@ -9,8 +9,8 @@ use lapin::{
     BasicProperties, Channel, Error as LapinErr,
 };
 
-use crate::errors::Error;
 use crate::{ensure_channel, ensure_consumer, ensure_queue};
+use crate::{errors::Error, ProcessingResult};
 
 pub type TaskID = ShortString;
 pub type RabbitMessage = Vec<u8>;
@@ -18,7 +18,7 @@ pub type RabbitMessage = Vec<u8>;
 pub trait QueueHandler: 'static + Unpin + Clone {
     fn source_queue_name(&self) -> String;
     fn target_queue_name(&self) -> String;
-    fn handle(&self, id: TaskID, incoming: RabbitMessage) -> Result<Option<RabbitMessage>, Error>;
+    fn handle(&self, id: TaskID, incoming: ProcessingResult) -> Option<ProcessingResult>;
 }
 
 pub struct QueueActor<T: QueueHandler> {
@@ -61,26 +61,13 @@ impl<T: QueueHandler> QueueActor<T> {
         Ok(addr)
     }
 
-    pub fn process_delivery(&self, item: &Delivery) -> Result<(String, Vec<u8>), Error> {
-        log::debug!(
-            "Starting to process delivery with properties: {:?}",
-            item.properties
-        );
-        let correlation_id = item.properties.correlation_id().to_owned().ok_or_else(|| {
-            Error::Common("No correlation ID found in msg: no address for response :(".to_string())
-        })?;
-
-        let handling_result = self
-            .handler
-            .handle(correlation_id.clone(), item.data.clone())
-            .map_err(|e| Error::Common(format!("Error processing message: {}", e)))?
-            .unwrap_or_default();
-
-        Ok((correlation_id.to_string(), handling_result))
-    }
-
-    pub fn send_message(&self, corr_id: String, ctx: &mut Context<Self>, msg: Vec<u8>) {
-        log::debug!("Sending msg with id {}", &corr_id);
+    pub fn publish_message(
+        &self,
+        corr_id: ShortString,
+        ctx: &mut Context<Self>,
+        msg: ProcessingResult,
+    ) {
+        log::debug!("Publishing msg {:?} with id {}", msg, &corr_id);
         let queue_name = String::from(self.handler.target_queue_name());
         let chan = self.channel.clone();
         ctx.spawn(wrap_future(async move {
@@ -88,11 +75,11 @@ impl<T: QueueHandler> QueueActor<T> {
                 "",
                 &queue_name,
                 BasicPublishOptions::default(),
-                &msg,
+                serde_json::to_string(&msg).unwrap().as_bytes(),
                 BasicProperties::default().with_correlation_id(corr_id.into()),
             )
             .await
-            .expect("Failed to send msg");
+            .expect("Failed to publish msg");
         }));
     }
 }
@@ -113,6 +100,12 @@ impl<T: QueueHandler> ActixStreamHandler<Result<Delivery, LapinErr>> for QueueAc
             self.handler.source_queue_name()
         );
 
+        let correlation_id = item.properties.correlation_id().to_owned().ok_or_else(|| {
+            log::error!("No correlation ID found in msg: no address for response :(");
+            return;
+        });
+        let corr_id = correlation_id.unwrap();
+
         let chan = self.channel.clone();
         ctx.spawn(wrap_future(async move {
             chan.basic_ack(item.delivery_tag, BasicAckOptions::default())
@@ -121,18 +114,10 @@ impl<T: QueueHandler> ActixStreamHandler<Result<Delivery, LapinErr>> for QueueAc
         }));
 
         log::debug!("Stream handler started processing message...");
-        let (corr_id, res) = match self.process_delivery(&item) {
-            Err(e) => {
-                log::warn!("Error occurred when proccessing delivery: {}", e);
-                return;
-            }
-            Ok(res) => res,
-        };
+        let to_process = serde_json::from_slice::<ProcessingResult>(item.data.as_slice()).unwrap();
 
-        log::debug!(
-            "Sending processing results to {}",
-            &self.handler.target_queue_name()
-        );
-        self.send_message(corr_id, ctx, res);
+        if let Some(msg) = self.handler.handle(corr_id.clone(), to_process) {
+            self.publish_message(corr_id, ctx, msg);
+        }
     }
 }

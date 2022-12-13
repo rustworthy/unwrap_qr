@@ -9,6 +9,7 @@ use lapin::{
     types::FieldTable,
     Channel, Connection, ConnectionProperties,
 };
+use serde_derive::{Deserialize, Serialize};
 
 pub const REQUESTS: &str = "requests";
 pub const RESPONSES: &str = "responses";
@@ -65,21 +66,32 @@ impl Message for QrRequest {
     type Result = ();
 }
 
-#[derive(Clone, Debug)]
-pub enum QrResponse {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ProcessingResult {
+    InProgress(Option<Vec<u8>>),
     Success(String),
     Failure(String),
 }
 
-impl Message for QrResponse {
+impl std::fmt::Display for ProcessingResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProcessingResult::Success(data) => write!(f, "Done: {}", data),
+            ProcessingResult::Failure(detail) => write!(f, "Error: {}", detail),
+            ProcessingResult::InProgress(_) => write!(f, "In progress..."),
+        }
+    }
+}
+
+impl Message for ProcessingResult {
     type Result = ();
 }
 
-impl From<Result<String, Error>> for QrResponse {
+impl From<Result<String, Error>> for ProcessingResult {
     fn from(value: Result<String, Error>) -> Self {
         match value {
-            Ok(_string) => QrResponse::Success(_string),
-            Err(e) => QrResponse::Failure(e.to_string()),
+            Ok(_string) => ProcessingResult::Success(_string),
+            Err(e) => ProcessingResult::Failure(e.to_string()),
         }
     }
 }

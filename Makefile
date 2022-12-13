@@ -18,3 +18,6 @@ rabbit/list_all: rabbit/list_channels rabbit/list_exchanges rabbit/list_queues r
 
 serve:
 	fuser -k 8089/tcp || true && RUST_LOG=debug cargo run --bin unwrap_qr_server
+
+worker:
+	RUST_LOG=debug cargo run --bin unwrap_qr_worker
